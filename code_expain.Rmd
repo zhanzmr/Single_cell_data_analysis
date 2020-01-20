@@ -1,0 +1,292 @@
+---
+title: "Code Explain"
+author: | 
+  | Mengrui Zhang
+  | The Georgia Genomics and Bioinformatics Core (GGBC)
+date: "9/3/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+
+In this analysis, we will perform the analysis of single-cell RNAseq data on Cat. The data were from 10x genomics analysis pipeline by using "Cellranger counts" with the cat reference genome. The R packages we use in this analysis will be "Monocle3" and "Seurat". 
+
+We plan to perform the following:
+
+1. Preprocessing the data using Principal components analysis (PCA). 
+2. Cluster cells using UMAP and Louvain methods. 
+3. Construct cell trajectories. 
+4. Oder cells in chronological order. 
+5. Pseudo time analysis. 
+6. Significant gene analysis. 
+
+# Pipeline analysis using "Cellranger"
+
+Use the following code to run analysis in "Cellranger"
+```{r echo=TRUE, eval=FALSE}
+cellranger count --force-cells 10000 --id=counts_10000_new_version 
+      --transcriptome=.../reference_chromosome 
+      --fastqs=.../cat_scRNAseq_cell-analysis/Cat_scRNAseq
+```
+
+The reference genome database used 
+
+1. Felis_catus.Felis_catus_9.0.96.chr.gtf
+
+2. Felis_catus.Felis_catus_9.0.dna.chromosomes.fa
+
+
+# 2. Data set analysis
+
+## 2.2 Load dataset into "Monocle3" and preprocessing with PCA
+
+The output of Cellranger analysis pipeline has three files: "barcodes", "features" and "matrix". The "barcodes" file contains all the cell names and the "feature" file contain the genes and gene short names. The "matrix" file includes the location of gene and cell and the counts in each location. We load this data into R.
+
+```{r echo=TRUE}
+library(monocle3)
+library(reticulate)
+library(stringr)
+library(Seurat)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(pander)
+##### Read 10x Data ##############
+# Provide the path to the Cell Ranger output.
+cat <- load_cellranger_data("C:/Users/mengr/Dropbox/GGBC/cat/data_analysis", 
+                            barcode_filtered = TRUE)
+```
+
+```{r echo=TRUE}
+cat
+```
+
+The above is a summary of the R object for this dataset. There are total 10000 cells and 26373 genes. We preprocessing the data into 100 dimensions for our later analysis. 
+
+We will just use the standard PCA method in this demonstration. When using PCA, specify the number of principal components that Monocle need to compute.
+
+This step is to normalize the data,to use Principal Components Analysis (the standard for RNA-seq) or Latent Semantic Indexing (common in ATAC-seq), and to remove any batch effects.
+
+```{r echo=TRUE}
+cat = preprocess_cds(cat, method = "PCA", num_dim = 100)
+plot_pc_variance_explained(cat)
+```
+
+## 2.3 Cluster cells using UMAP and Louvain methods.
+
+We cluster the cells using "UMAP". There are total 10 clusters. 
+
+To reduce the dimensionality of the data down into the X, Y plane so we can plot it easily. 
+
+Grouping cells into clusters is an important step in identifying the cell types represented in your data. Monocle uses a technique called Louvain community detection to group cells. This approach was introduced by Levine et al as part of the phenoGraph algorithm.
+
+```{r echo=TRUE}
+#Umap-PCA
+cat = reduce_dimension(cat, reduction_method="UMAP", preprocess_method = "PCA")
+
+cat = cluster_cells(cat, resolution = 1e-4, verbose = T,
+                    python_home = "C:/Users/mengr/location/.conda/envs/r-reticulate/python")
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+plot_cells(cat, reduction_method="UMAP")
+```
+
+
+## 2.4 cluster the cells using t-SNE
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cat = reduce_dimension(cat, reduction_method="tSNE", preprocess_method = "PCA")
+cat = cluster_cells(cat, reduction_method="tSNE", resolution = 1e-4, verbose = F,
+                    python_home = "C:/Users/theuser/location/.conda/envs/r-reticulate/python")
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+plot_cells(cat, reduction_method="tSNE")
+```
+
+This figure shows the cluster result using "t-SNE" method. 
+
+#### Find marker genes expressed by each cluster
+Once cells have been clustered, we can ask what genes makes them different from one another. To do that, start by calling the top_markers() function:
+
+
+## 2.5 Construct trajectories
+
+The trajectories of cells can be learned by using "monocle3". The trajectories were calculated based on the UMAP cluster method.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#Learn the trajectory
+cat <- learn_graph(cat)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+plot_cells(cat, reduction_method="UMAP")
+```
+
+From the above figure, we can see that there are more than one trajectories in this data.
+
+## 2.6 Oder cells in chronological order
+
+In this section, We will use R package "Seurat" basically for cell-gene data matrix and normalization. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Load the dataset
+cat.data <- Read10X(data.dir = "C:/Users/mengr/Dropbox/GGBC/cat/data_analysis/outs/filtered_feature_bc_matrix")
+
+#seurat normalization
+cat_sc <- NormalizeData(cat.data, normalization.method = "LogNormalize", scale.factor = 10000)
+cat_data <- as.data.frame(cat_sc)
+cat_data$gene <- rownames(cat_data); rownames(cat_data) <- 1:nrow(cat_data)
+```
+
+
+The following table is significant genes in each of the developmental stages
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Read marker genes
+marker <- read.csv("C:/Users/mengr/Dropbox/GGBC/cat/data_analysis/marker.csv", stringsAsFactors = F)
+marker <- marker[,1:5]
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pander::pander(marker[,3:5])
+```
+
+
+In this analysis, we select cells that are in the first stage (Spermatogonial Stem Cells (SSC's)-Stem Progenitor) and then construct the pseudo time analysis. By using the significant genes, we can find the significant cells that contain part of the significant genes. We will make a cutoff point here to subset the cells. The next step is to find the nearest node on the trajectories for the significant cells. We order those nodes and construct the pseudo time analysis. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cmlu <- str_split_fixed(marker$Genes, "- ", n = Inf)
+cmlu[cmlu==""] <- NA
+#cmlu <- na.omit(cmlu)
+
+gene_names = cmlu[1,]
+gene_names <- na.omit(gene_names)
+```
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{rl}
+  \hline
+ & gene\_names \\ 
+  \hline
+1 & ID4 \\ 
+  2 & HSPA8 \\ 
+  3 & TAF4B \\ 
+  4 & PEG10 \\ 
+  5 & RBM5 \\ 
+  6 & TCN2 \\ 
+  7 & ISOC1 \\ 
+  8 & HSD17B14 \\ 
+  9 & PHOSPHO2 \\ 
+  10 & ENPP2 \\ 
+  11 & PRDX2 \\ 
+  12 & ANXA1 \\ 
+  13 & SERPINA5 \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+This in all the gene short names at the stage: Spermatogonial Stem Cells (SSC's)-Stem Progenitor. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+## Subset matrix
+sub_gene <- data.frame()
+for (jj in 1:length(gene_names)){
+  subset_data <- cat_data[cat_data$gene == gene_names[jj],]
+#  subset_data <- subset_data[ , -which(names(subset_data) %in% c("gene"))]
+  sub_gene <- rbind(sub_gene, subset_data)
+}
+gene = sub_gene$gene
+sub_gene <- sub_gene[ , -which(names(sub_gene) %in% c("gene"))]
+t1 = as.matrix(t(sub_gene))
+t1 = as.vector(t1)
+tt1 = data.frame(counts = t1, gene = rep(gene, each = 10000))
+t2 = tt1[tt1$counts!=0,]
+#x = seq(1,length(t2))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#boxplot(t2)
+#tt = as.data.frame(t2)
+g <- ggplot(t2, aes(t2$gene,t2$counts))
+g + geom_boxplot(varwidth=T, fill="plum") + 
+    labs(title="Box plot", 
+         subtitle="Normalized counts distribution in Significant genes",
+         caption="Source: Cat",
+         x="Significant Genes",
+         y="Log-normalized Counts")
+
+```
+
+The figure shows a box plot of all the significant genes in stage 1 and their counts after log-normalization. Now, we choose a cutoff point as 2.8.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#########
+string_cell_name <- c()
+cutoff = 2.8
+
+for (ii in 1:length(gene_names)){
+  subset_data <- cat_data[cat_data$gene == gene_names[ii],]
+  subset_data <- subset_data[ , -which(names(subset_data) %in% c("gene"))]
+  
+  temp <- colnames(subset_data[,subset_data >= cutoff])
+  temp2 <- paste(temp, "-1",sep = "")
+  string_cell_name <- c(string_cell_name,temp2)
+  print(ii)
+}
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#########
+string_cell_name <- c()
+cutoff = 2.8
+
+for (ii in 1:length(gene_names)){
+  subset_data <- cat_data[cat_data$gene == gene_names[ii],]
+  subset_data <- subset_data[ , -which(names(subset_data) %in% c("gene"))]
+  
+  temp <- colnames(subset_data[,subset_data >= cutoff])
+  temp2 <- paste(temp, "-1",sep = "")
+  string_cell_name <- c(string_cell_name,temp2)
+  print(ii)
+}
+
+string = unique(string_cell_name)
+
+get_earliest_principal_node <- function(cds,cell_ID){
+  node_name = as.data.frame(igraph::V(principal_graph(cds)[["UMAP"]])$name)
+  closest_vertex <- cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.data.frame(closest_vertex)
+  closest_vertex$cell <- rownames(closest_vertex); rownames(closest_vertex) <- 1:nrow(closest_vertex)
+  names(closest_vertex) <- c("node","cell")
+  index <- closest_vertex[closest_vertex$cell %in% cell_ID,]$node
+  root_nodes <- as.character(node_name[index,])
+  root_nodes
+}
+
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+start <- get_earliest_principal_node(cat,string)
+start <- unique(start)
+cat <- order_cells(cat, root_pr_nodes=start)
+```
+
+
+## Pseudo time analysis
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+plot_cells(cat,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=1.5,
+           cell_size = 0.8)
+```
+
+Here is the pseudo time analysis figure with the starting points as the significant genes from stage 1. 
